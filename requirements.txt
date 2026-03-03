@@ -1,3 +1,5 @@
 matplotlib
 numpy
 setuptools
+scipy
+gtsam

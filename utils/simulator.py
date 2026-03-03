@@ -1,5 +1,5 @@
 import numpy as np
-
+from scipy.spatial.transform import Rotation as rot_obj
 
 class Simulator:
     def __init__(self, s_0:np.ndarray, Q:np.ndarray, R:np.ndarray, transition_function, measurement_function,
@@ -68,7 +68,7 @@ class Simulator:
         self.N = len(self.s_hist)
 
         # take the measurement
-        self._measure(with_noise=True)        
+        self._measure()        
 
     def _measure(self):
         """
@@ -88,12 +88,12 @@ class Simulator:
         
         self.y_hist.append(y)
 
-    def step_k_times(self, u:np.ndarray, k:int):
+    def step_k_times(self, actions:np.ndarray):
         """
-        step the simulator k times, given action u.
+        step the simulator k times, once for each action u in actions.
         we only add the new states to state history
         """
-        for _ in range(k):
+        for u in actions:
             self.step(u)
 
     def noiseless_transition(self, i:int, u:np.ndarray):
@@ -111,17 +111,186 @@ class Simulator:
         s_cur = self.s_hist[i]
         y = self.measurement_function(s_cur, self.R, with_noise=False)
         return y
+    
+    def get_all_states(self):
+        return np.array(self.s_hist)
+    
+    def get_all_measurements(self):
+        return np.array(self.y_hist)
+    
+    def get_all_actions(self):
+        return np.array(self.u_hist)
 
 def transition_function(s:np.ndarray, u:np.ndarray, Q:np.ndarray, dt=0.01, with_noise=True):
     """
-    TODO: implement the transition function for the simulator
-    """
-    pass
+    state definition for this function is:
+    [x, y, z,
+    quat_x, quat_y, quat_z, quat_w,
+    vx, vy, vz,
+    wx, wy, wz,
+    b_ax, b_ay, b_az,
+    b_wx, b_wy, b_wz,
+    gx, gy, gz,
+    scale]
 
-def measurement_function(s:np.ndarray, R:np.ndarray, with_noise=True):
+    action definition for this function is:
+    [ax, ay, az,
+    alpha_x, alpha_y, alpha_z]
+
+    all are in camera frame
     """
-    TODO: implement the measurement function for the simulator
+
+    # --- unpack state ---
+    p = s[0:3]
+    q = s[3:7]
+    v = s[7:10]
+    b_w = s[10:13]
+    b_a = s[13:16]
+    g = s[16:19]
+    scale = s[19]
+
+    # --- unpack input ---
+    a_meas = u[0:3]
+    omega_meas = u[3:6]   # now angular velocity
+
+    # --- process noise ---
+    if with_noise:
+        noise = np.random.multivariate_normal(np.zeros(Q.shape[0]), Q)
+    else:
+        noise = np.zeros(Q.shape[0])
+
+    noise_p   = noise[0:3]
+    noise_q   = noise[3:6]    # small-angle perturbation
+    noise_v   = noise[6:9]
+    noise_w   = noise[9:12]
+    noise_bw  = noise[12:15]
+    noise_ba  = noise[15:18]
+
+    # -------------------------------------------------
+    # Bias-corrected IMU measurements
+    # -------------------------------------------------
+    a_body = a_meas - b_a
+    omega_body = omega_meas - b_w
+
+    # -------------------------------------------------
+    # Orientation update
+    # -------------------------------------------------
+    R_wb = rot_obj.from_quat(q)
+
+    # Small rotation from angular velocity
+    delta_theta = omega_body * dt
+    delta_R = rot_obj.from_rotvec(delta_theta)
+
+    R_new = R_wb * delta_R
+
+    # Optional orientation noise (small-angle)
+    if with_noise:
+        R_noise = rot_obj.from_rotvec(noise_q)
+        R_new = R_new * R_noise
+
+    q_new = R_new.as_quat()
+
+    # -------------------------------------------------
+    # Store angular velocity state (now measured, not integrated)
+    # -------------------------------------------------
+    w_new = omega_body + noise_w
+
+    # -------------------------------------------------
+    # Linear acceleration to world frame
+    # -------------------------------------------------
+    a_world = R_wb.apply(a_body) - g
+
+    # -------------------------------------------------
+    # Velocity update
+    # -------------------------------------------------
+    v_new = v + a_world * dt + noise_v
+
+    # -------------------------------------------------
+    # Position update
+    # -------------------------------------------------
+    p_new = p + v * dt + 0.5 * a_world * dt**2 + noise_p
+
+    # -------------------------------------------------
+    # Bias random walk
+    # -------------------------------------------------
+    b_a_new = b_a + noise_ba * dt
+    b_w_new = b_w + noise_bw * dt
+
+    # -------------------------------------------------
+    # Assemble new state
+    # -------------------------------------------------
+    s_new = np.zeros_like(s)
+
+    s_new[0:3]   = p_new
+    s_new[3:7]   = q_new
+    s_new[7:10]  = v_new
+    s_new[10:13] = b_w_new
+    s_new[13:16] = b_a_new
+    s_new[16:19] = g
+    s_new[19]    = scale
+
+    return s_new
+
+def imu_measurement_function(s:np.ndarray, R:np.ndarray, with_noise=True):
     """
-    pass
+    state definition for this function is:
+    [x, y, z,
+    quat_x, quat_y, quat_z, quat_w,
+    vx, vy, vz,
+    b_ax, b_ay, b_az,
+    b_wx, b_wy, b_wz,
+    scale]
+    positions and velocities are metric, so
+    x*scale is the unscaled postion, vx*scale is the unscaled velocity, etc.
+
+    
+    measurements are scaled positions, and orientations from vision. Also are 
+    preintegrated IMU measurements.
+
+    measurement definition for this function is:
+    [x_meas, y_meas, z_meas, 
+    quat_x, quat_y, quat_z, quat_w 
+    ]
+    """
+    y = 0
+
+def camera_measurement_function(s:np.ndarray, R:np.ndarray, with_noise=True):
+    """
+    state definition for this function is:
+    [x, y, z,
+    quat_x, quat_y, quat_z, quat_w,
+    vx, vy, vz,
+    b_ax, b_ay, b_az,
+    b_wx, b_wy, b_wz,
+    scale]
+    positions and velocities are metric, so
+    x*scale is the unscaled postion as observed by the camera, vx*scale is the unscaled velocity, etc.
+
+    measurement definition for this function is:
+    [x_scaled, y_scaled, z_scaled, 
+    quat_x, quat_y, quat_z, quat_w, 
+    ]
+    """
+    y = np.array([s[0], 
+                  s[1], 
+                  s[2], 
+                  s[3], 
+                  s[4], 
+                  s[5], 
+                  s[6]])
+    
+    angles = rot_obj.from_quat(s[3:7]).as_euler('xyz', degrees=True)
+
+    if with_noise:
+        noise = np.random.multivariate_normal(np.zeros(R.shape[0]), R)
+
+    y[0:3] += noise[0:3]
+    angles += noise[3:6]
+
+    y[0:3] *= s[-1]
+
+    y[3:7] = rot_obj.from_euler('xyz', angles, degrees=True).as_quat()
+
+    return y
 
 
