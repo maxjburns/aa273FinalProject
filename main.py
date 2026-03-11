@@ -2,7 +2,7 @@
 from utils.simulator import Simulator, transition_function, camera_measurement_function, imu_measurement_function
 import numpy as np
 from utils.test_data_generation import generate_sinusoidal_action_sequence
-from utils.visualization import plot_xyz_trajectory, plot_camera_measured_trajectory, plot_imu_readings, plot_optimized_trajectory, plot_optimized_velocity
+from utils.visualization import plot_bias_comparison, plot_camera_vs_true, plot_comparison, plot_xyz_trajectory, plot_camera_measured_trajectory, plot_imu_readings, plot_optimized_trajectory, plot_optimized_velocity
 from scipy.spatial.transform import Rotation as rot_obj
 from utils.optimization import ScaleOptimizer
 
@@ -11,7 +11,7 @@ from utils.optimization import ScaleOptimizer
 # -----------------------
 if __name__ == "__main__":
 
-    plot_sim_output = True
+    plot_sim_output = False
     plot_optimizer_output = True
 
     # provide an estimate of imu noise parameters. these include the drift of the
@@ -139,7 +139,25 @@ if __name__ == "__main__":
         print("scale_opt:", 1/result.atVector(optimizer.scale_key)[0])
         plot_optimized_trajectory(cam_traj[:, 0], result, optimizer.pose_keys)
         plot_optimized_velocity(cam_traj[:, 0], result, optimizer.vel_keys)
-
-
+        plot_comparison(
+            cam_traj[:,0],
+            states,
+            dt_imu,
+            result,
+            optimizer.pose_keys
+        )
+        plot_bias_comparison(
+            cam_traj[:,0],
+            states,
+            dt_imu,
+            result,
+            optimizer.bias_keys
+        )
+        plot_camera_vs_true(
+            cam_traj[:,0],
+            cam_traj,
+            states,
+            dt_imu
+        )
 
 

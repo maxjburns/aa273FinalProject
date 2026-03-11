@@ -30,7 +30,7 @@ def generate_sinusoidal_action_sequence(num_steps, dt, noise_std=20):
     xyz_traj[:, 1] = 1.0 + 0.2 * np.sin(2 * np.pi * 0.5 * t+3*np.pi/4)
     #xyz_traj[0:5, 1] = 1.0
 
-    xyz_traj[:, 2] = 1.0 + 0.2 * np.sin(2 * np.pi * 0.5 * t+np.pi/2)
+    xyz_traj[:, 2] = 1.0 + 0.2 * np.sin(2 * np.pi * 0.8 * t+np.pi/2)
     #xyz_traj[0:5, 2] = 1.0
 
     linear_world_vel = np.gradient(xyz_traj, dt, axis=0)

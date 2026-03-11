@@ -201,3 +201,157 @@ def set_axes_equal(ax):
     ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
 
+
+def plot_comparison(cam_times, states, dt_imu, result, pose_keys):
+    """
+    Compare ground truth trajectory from simulator with optimized trajectory.
+    """
+
+    # -----------------------------
+    # Ground truth (sampled)
+    # -----------------------------
+    gt_indices = (cam_times / dt_imu).astype(int)
+    gt_xyz = states[gt_indices, 1:4]
+
+    # -----------------------------
+    # Optimized trajectory
+    # -----------------------------
+    opt_xyz = np.array([
+        result.atPose3(k).translation()
+        for k in pose_keys
+    ])
+
+    # -----------------------------
+    # Plot comparison
+    # -----------------------------
+    fig, axs = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+
+    labels = ['x', 'y', 'z']
+    linewidth = 3
+
+    for i in range(3):
+        axs[i].plot(cam_times, gt_xyz[:, i],
+                    label='Ground Truth',
+                    linewidth=linewidth)
+
+        axs[i].plot(cam_times, opt_xyz[:, i],
+                    '--',
+                    label='Optimized',
+                    linewidth=linewidth)
+
+        axs[i].set_title(f'{labels[i]} Position')
+        axs[i].set_ylabel(f'{labels[i]} (m)')
+        axs[i].grid(True)
+
+    axs[-1].set_xlabel('Time (s)')
+    axs[0].legend()
+
+    fig.suptitle("Trajectory Comparison (Ground Truth vs Optimized)", fontsize=14)
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_bias_comparison(cam_times, states, dt_imu, result, bias_keys):
+    """
+    Plot true vs estimated accelerometer bias (x,y,z components) over time.
+    """
+
+    # -----------------------------
+    # True bias from simulator
+    # -----------------------------
+    gt_indices = (cam_times / dt_imu).astype(int)
+    true_bias = states[gt_indices, 17:20]   # accelerometer bias
+
+    # -----------------------------
+    # Estimated bias from optimizer
+    # -----------------------------
+    est_bias = np.array([
+        result.atConstantBias(k).accelerometer()
+        for k in bias_keys
+    ])
+
+    # -----------------------------
+    # Plot
+    # -----------------------------
+    fig, axs = plt.subplots(3, 1, figsize=(10,8), sharex=True)
+
+    labels = ['x', 'y', 'z']
+    linewidth = 3
+
+    for i in range(3):
+        axs[i].plot(
+            cam_times,
+            true_bias[:, i],
+            linewidth=linewidth,
+            label="Ground Truth"
+        )
+
+        axs[i].plot(
+            cam_times,
+            est_bias[:, i],
+            "--",
+            linewidth=linewidth,
+            label="Estimated"
+        )
+
+        axs[i].set_ylabel(f"Bias {labels[i]} (m/s²)")
+        axs[i].set_title(f"Accelerometer Bias {labels[i]}")
+        axs[i].grid(True)
+
+    axs[-1].set_xlabel("Time (s)")
+    axs[0].legend()
+
+    fig.suptitle("Accelerometer Bias Comparison (Ground Truth vs Optimized)")
+    plt.tight_layout()
+    plt.show()
+
+def plot_camera_vs_true(cam_times, cam_traj, states, dt_imu):
+    """
+    Plot unscaled camera trajectory vs true simulator trajectory.
+    """
+
+    # -----------------------------
+    # True trajectory sampled at camera times
+    # -----------------------------
+    gt_indices = (cam_times / dt_imu).astype(int)
+    gt_xyz = states[gt_indices, 1:4]
+
+    # -----------------------------
+    # Camera trajectory
+    # -----------------------------
+    cam_xyz = cam_traj[:,1:4]
+
+    # -----------------------------
+    # Plot
+    # -----------------------------
+    fig, axs = plt.subplots(3, 1, figsize=(10,8), sharex=True)
+
+    labels = ['x', 'y', 'z']
+    linewidth = 3
+
+    for i in range(3):
+        axs[i].plot(
+            cam_times,
+            gt_xyz[:, i],
+            linewidth=linewidth,
+            label="Ground Truth"
+        )
+
+        axs[i].plot(
+            cam_times,
+            cam_xyz[:, i],
+            "g-",
+            linewidth=linewidth,
+            label="Camera (scaleless)"
+        )
+
+        axs[i].set_ylabel(f"{labels[i]} (m)")
+        axs[i].set_title(f"{labels[i]} Position")
+        axs[i].grid(True)
+
+    axs[-1].set_xlabel("Time (s)")
+    axs[0].legend()
+
+    fig.suptitle("Camera Measurements vs True Trajectory")
+    plt.tight_layout()
+    plt.show()
