@@ -1,14 +1,16 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-def generate_sinusoidal_action_sequence(num_steps, dt, g, b_g, b_a, noise_std=0.1):
+def generate_sinusoidal_action_sequence(num_steps, dt, noise_std=20):
     """
-    action[:, 0:3] = linear accel in body frame
-    action[:, 3:6] = angular velocity in body frame (with gyro bias)
+    action[:, 0:3] = linear accel in world frame
+    action[:, 3:6] = angular accel in world frame
 
     Returns:
-    - actions: (N,6)
+    - actions: (N,6) (accelerations in world frame)
     - xyz_traj: (N,3) world positions
+    - v_traj: (N,3) world velocities
+    - w_traj: (N,3) world angular velocities
     - world_orientations: scipy Rotation object
     """
 
@@ -18,62 +20,43 @@ def generate_sinusoidal_action_sequence(num_steps, dt, g, b_g, b_a, noise_std=0.
     # World position trajectory
     # ----------------------------
     xyz_traj = np.zeros((num_steps, 3))
-    xyz_traj[:, 0] = t 
-    xyz_traj[0:5, 0] = 0 
+    # forward motion with noise
+    v_forward = 1.0  # m/s nominal forward velocity
+
+    for i in range(1, num_steps):
+        v_forward_i = v_forward + np.sin(2 * np.pi * 0.1 * t[i]) * 0.25  # add some sinusoidal variation to forward velocity
+        xyz_traj[i, 0] = xyz_traj[i-1, 0] + v_forward_i * dt
 
     xyz_traj[:, 1] = 1.0 + 0.2 * np.sin(2 * np.pi * 0.5 * t+3*np.pi/4)
-    xyz_traj[0:5, 1] = 1.0
+    #xyz_traj[0:5, 1] = 1.0
 
     xyz_traj[:, 2] = 1.0 + 0.2 * np.sin(2 * np.pi * 0.5 * t+np.pi/2)
-    xyz_traj[0:5, 2] = 1.0
+    #xyz_traj[0:5, 2] = 1.0
 
     linear_world_vel = np.gradient(xyz_traj, dt, axis=0)
     linear_world_accel = np.gradient(linear_world_vel, dt, axis=0)
-
-    # Add gravity in world frame
-    linear_world_accel += g
 
     # ----------------------------
     # World orientation trajectory
     # ----------------------------
     th_traj = np.zeros((num_steps, 3))
     # Example rotation (degrees)
-    #th_traj[:, 1] = 30 * np.sin(2 * np.pi * 0.2 * t)
+    th_traj[:, 1] = 30 * np.sin(2 * np.pi * 0.2 * t)
 
     world_orientations = R.from_euler('xyz', th_traj, degrees=True)
 
     # Compute angular velocity in world frame
     angular_world_vel = np.gradient(th_traj, dt, axis=0)
     angular_world_vel = np.deg2rad(angular_world_vel)  # convert deg/s → rad/s
-
-    # ----------------------------
-    # Convert to body frame
-    # ----------------------------
-    linear_body_accel = np.zeros_like(linear_world_accel)
-    angular_body_vel = np.zeros_like(angular_world_vel)
-
-    for k in range(num_steps):
-        R_wb = world_orientations[k]
-
-        # world → body
-        linear_body_accel[k] = R_wb.inv().apply(linear_world_accel[k])
-        angular_body_vel[k] = R_wb.inv().apply(angular_world_vel[k])
-
-    # ----------------------------
-    # Apply biases (correctly)
-    # ----------------------------
-    linear_body_accel += b_a          # accelerometer bias
-    angular_body_vel += b_g           # gyro bias
-
-    # Optional noise
-    # linear_body_accel += np.random.normal(0, noise_std, linear_body_accel.shape)
-    # angular_body_vel += np.random.normal(0, noise_std, angular_body_vel.shape)
-
+    angular_world_accel = np.gradient(angular_world_vel, dt, axis=0)
+    
     # ----------------------------
     # Pack actions
     # ----------------------------
     actions = np.zeros((num_steps, 6))
-    actions[:, 0:3] = linear_body_accel
-    actions[:, 3:6] = angular_body_vel
-    #print(angular_body_vel)
-    return actions, xyz_traj, world_orientations
+    actions[:, 0:3] = linear_world_accel
+    actions[:, 3:6] = angular_world_accel
+
+    print(linear_world_accel)
+
+    return actions, xyz_traj, linear_world_vel, angular_world_vel, world_orientations
