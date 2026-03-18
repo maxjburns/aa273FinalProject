@@ -4,7 +4,7 @@ from scipy.spatial.transform import Rotation as rot_obj
 class Simulator:
     def __init__(self, s_0:np.ndarray, Q:np.ndarray, R_imu:np.ndarray, R_cam:np.ndarray, transition_function, 
                  imu_measurement_function, camera_measurement_function,
-                action_dim:int, meas_dim:int, dt=0.01):
+                action_dim:int, meas_dim:int, dt=0.01, T_ic=np.eye(4)):
         """
         s_0 --> initial state
         Q --> process noise covariance
@@ -59,6 +59,7 @@ class Simulator:
         self.meas_dim = meas_dim
 
         self.N = 1
+        self.T_ic = T_ic
 
     def step(self, u:np.ndarray):
         """
@@ -100,7 +101,7 @@ class Simulator:
             raise ValueError(f"Need at least 2 states in history to take a measurement, got only {len(self.s_hist)}")
         s_prev = self.s_hist[-2]
         s_cur = self.s_hist[-1]
-        y_imu = self.imu_measurement_function(s_prev, s_cur, self.R_imu, self.dt, with_noise=True)
+        y_imu = self.imu_measurement_function(s_prev, s_cur, self.R_imu, self.dt, T_ic=self.T_ic, with_noise=True)
         y_cam = self.camera_measurement_function(s_cur, self.R_cam, with_noise=True)
 
         if type(y_imu) != np.ndarray:
@@ -141,7 +142,7 @@ class Simulator:
             raise ValueError(f"Need at least 2 states in history to take a measurement, got only {len(self.s_hist)}")
         s_cur = self.s_hist[i]
         s_prev = self.s_hist[i-1]
-        y_imu = self.imu_measurement_function(s_prev, s_cur, self.R_imu, self.dt, with_noise=False)
+        y_imu = self.imu_measurement_function(s_prev, s_cur, self.R_imu, self.dt, T_ic=self.T_ic, with_noise=False)
         y_cam = self.camera_measurement_function(s_cur, self.R_cam, with_noise=False)
         y = np.concatenate([s_cur[0:1], y_imu, y_cam])
         return y
@@ -228,7 +229,7 @@ def transition_function(s:np.ndarray, u:np.ndarray, Q:np.ndarray, dt=0.01, with_
 
     return s_new
 
-def imu_measurement_function( s_prev:np.ndarray, s_cur:np.ndarray, R:np.ndarray, dt, with_noise=True):
+def imu_measurement_function( s_prev:np.ndarray, s_cur:np.ndarray, R:np.ndarray, dt, T_ic=np.eye(4), with_noise=True):
     """
     we return fake IMU measurements based on the given states and noise covariance R
     return is:
@@ -238,27 +239,31 @@ def imu_measurement_function( s_prev:np.ndarray, s_cur:np.ndarray, R:np.ndarray,
     """
     vel_cur = s_cur[8:11]
     vel_prev = s_prev[8:11]
-
     b_w_cur = s_cur[14:17]
     b_a_cur = s_cur[17:20]
-
     orientation_cur = s_cur[4:8]
     orientation_prev = s_prev[4:8]
-
     g = s_cur[20:23]
-    
-    # get world linear acceleration with the derivative of true velocity
-    a_meas_w = (vel_cur - vel_prev) / dt + g
-    # now convert to body frame and add bias:
-    R_bw = rot_obj.from_quat(orientation_cur).inv()
-    a_meas_b = R_bw.apply(a_meas_w) + b_a_cur
 
-    # get angular velocity measurements, convert from quats to rotvecs to get the derivative, then add bias
+    R_ic = T_ic[0:3, 0:3]   # IMU -> camera
+    t_ic = T_ic[0:3, 3]     # IMU origin in camera frame
+    R_ci = R_ic.T
+    r_ic_c = -t_ic          # camera -> IMU vector in camera frame
+
+    a_meas_w = (vel_cur - vel_prev) / dt + g
+    R_cw = rot_obj.from_quat(orientation_cur).inv()
+    a_meas_c = R_cw.apply(a_meas_w)
+
     R_cur = rot_obj.from_quat(orientation_cur)
     R_prev = rot_obj.from_quat(orientation_prev)
+    dR =  R_prev.inv() * R_cur
+    w_meas_c = dR.as_rotvec() / dt
 
-    dR = R_cur * R_prev.inv()
-    w_meas_b = dR.as_rotvec() / dt + b_w_cur
+    a_meas_c = a_meas_c + np.cross(w_meas_c, np.cross(w_meas_c, r_ic_c))
+
+    w_meas_b = R_ci @ w_meas_c + b_w_cur
+    a_meas_b = R_ci @ a_meas_c + b_a_cur
+
     if with_noise:
         noise = np.random.multivariate_normal(np.zeros(6), R)
     else:

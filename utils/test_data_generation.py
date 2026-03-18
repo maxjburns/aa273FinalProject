@@ -1,62 +1,59 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-def generate_sinusoidal_action_sequence(num_steps, dt, noise_std=20):
-    """
-    action[:, 0:3] = linear accel in world frame
-    action[:, 3:6] = angular accel in world frame
+def generate_sinusoidal_action_sequence(num_steps, dt, seed=None):
 
-    Returns:
-    - actions: (N,6) (accelerations in world frame)
-    - xyz_traj: (N,3) world positions
-    - v_traj: (N,3) world velocities
-    - w_traj: (N,3) world angular velocities
-    - world_orientations: scipy Rotation object
-    """
+    rng = np.random.default_rng(seed)
 
     t = np.linspace(0, (num_steps - 1) * dt, num_steps)
 
-    # ----------------------------
-    # World position trajectory
-    # ----------------------------
+    fwd_freq = rng.uniform(0.03, 0.15)    
+    y_freq   = rng.uniform(0.2, 0.8)   
+    z_freq   = rng.uniform(0.3, 1.2) 
+
+    roll_freq  = rng.uniform(0.1, 0.3) 
+    pitch_freq = rng.uniform(0.05, 0.21)
+    yaw_freq   = rng.uniform(0.09, 0.26) 
+
+    phase_y = 3 * np.pi / 4 + rng.uniform(-0.5, 0.5)
+    phase_z = np.pi / 2     + rng.uniform(-0.5, 0.5)
+    phase_pitch = 0.4       + rng.uniform(-0.3, 0.3)
+    phase_yaw   = 0.8       + rng.uniform(-0.3, 0.3)
+
+    # --- Position trajectory ---
     xyz_traj = np.zeros((num_steps, 3))
-    # forward motion with noise
-    v_forward = 1.0  # m/s nominal forward velocity
+    v_forward = 1.0
 
     for i in range(1, num_steps):
-        v_forward_i = v_forward + np.sin(2 * np.pi * 0.1 * t[i]) * 0.25  # add some sinusoidal variation to forward velocity
-        xyz_traj[i, 0] = xyz_traj[i-1, 0] + v_forward_i * dt
+        v_forward_i = v_forward + 0.25 * np.sin(2 * np.pi * fwd_freq * t[i])
+        xyz_traj[i, 0] = xyz_traj[i - 1, 0] + v_forward_i * dt
 
-    xyz_traj[:, 1] = 1.0 + 0.2 * np.sin(2 * np.pi * 0.5 * t+3*np.pi/4)
-    #xyz_traj[0:5, 1] = 1.0
-
-    xyz_traj[:, 2] = 1.0 + 0.2 * np.sin(2 * np.pi * 0.8 * t+np.pi/2)
-    #xyz_traj[0:5, 2] = 1.0
+    xyz_traj[:, 1] = 1.0 + 0.2 * np.sin(2 * np.pi * y_freq * t + phase_y)
+    xyz_traj[:, 2] = 1.0 + 0.2 * np.sin(2 * np.pi * z_freq * t + phase_z)
 
     linear_world_vel = np.gradient(xyz_traj, dt, axis=0)
     linear_world_accel = np.gradient(linear_world_vel, dt, axis=0)
 
-    # ----------------------------
-    # World orientation trajectory
-    # ----------------------------
+    # --- Orientation trajectory (degrees) ---
     th_traj = np.zeros((num_steps, 3))
-    # Example rotation (degrees)
-    th_traj[:, 1] = 30 * np.sin(2 * np.pi * 0.2 * t)
+    th_traj[:, 0] = 30.0 * np.sin(2 * np.pi * roll_freq * t)                 # roll
+    th_traj[:, 1] = 20.0 * np.sin(2 * np.pi * pitch_freq * t + phase_pitch)  # pitch
+    th_traj[:, 2] = 25.0 * np.sin(2 * np.pi * yaw_freq * t + phase_yaw)      # yaw
 
-    world_orientations = R.from_euler('xyz', th_traj, degrees=True)
+    world_orientations = R.from_euler("xyz", th_traj, degrees=True)
 
-    # Compute angular velocity in world frame
-    angular_world_vel = np.gradient(th_traj, dt, axis=0)
-    angular_world_vel = np.deg2rad(angular_world_vel)  # convert deg/s → rad/s
-    angular_world_accel = np.gradient(angular_world_vel, dt, axis=0)
-    
-    # ----------------------------
-    # Pack actions
-    # ----------------------------
+    # --- Angular velocity ---
+    angular_body_vel = np.zeros((num_steps, 3))
+    for i in range(num_steps - 1):
+        dR_body = world_orientations[i].inv() * world_orientations[i + 1]
+        angular_body_vel[i] = dR_body.as_rotvec() / dt
+    angular_body_vel[-1] = angular_body_vel[-2]
+
+    angular_body_accel = np.gradient(angular_body_vel, dt, axis=0)
+
+    # --- Actions ---
     actions = np.zeros((num_steps, 6))
     actions[:, 0:3] = linear_world_accel
-    actions[:, 3:6] = angular_world_accel
+    actions[:, 3:6] = angular_body_accel
 
-    print(linear_world_accel)
-
-    return actions, xyz_traj, linear_world_vel, angular_world_vel, world_orientations
+    return actions, xyz_traj, linear_world_vel, angular_body_vel, world_orientations

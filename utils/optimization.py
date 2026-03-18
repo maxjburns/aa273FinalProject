@@ -4,10 +4,11 @@ from functools import partial
 from scipy.spatial.transform import Rotation as spR
 
 class ScaleOptimizer:
-    def __init__(self, R_cam, noise_params):
+    def __init__(self, R_cam, noise_params, T_ic=np.eye(4)):
         """
         R_cam is vision measurement noise covariance
         noise_params is a dict with keys: acc_noise_sig, gyro_noise_sig, acc_bias_sig, gyro_bias_sig
+        T_ic is the transformation from IMU to camera frame
         """
         
         self.R_cam = R_cam
@@ -15,6 +16,7 @@ class ScaleOptimizer:
         # add imu factors, which are relative between frames
         self.init_preintegration_params(acc_noise_sig=noise_params["acc_noise_sig"], 
                                         gyro_noise_sig=noise_params["gyro_noise_sig"])
+        self.T_ic = T_ic
         
 
 
@@ -22,9 +24,6 @@ class ScaleOptimizer:
                           cam_data, 
                           accel_data,
                           x_init): 
-        """
-        
-        """
         
         t_imu = accel_data[:, 0]
         w = accel_data[:, 1:4]
@@ -75,7 +74,7 @@ class ScaleOptimizer:
                 gtsam.CustomFactor(
                     self.vision_model,
                     [self.pose_keys[cam_idx], self.pose_keys[cam_idx + 1], self.scale_key],
-                    partial(vision_factor, cam_traj[cam_idx], cam_traj[cam_idx + 1]),
+                    partial(vision_factor, cam_traj[cam_idx], cam_traj[cam_idx + 1], self.T_ic),
                 )
             )
         # now we add the IMU factors, which constrain connections between camera frames with real scale
@@ -83,6 +82,7 @@ class ScaleOptimizer:
             dt_cam = t_cam[cam_idx+1] - t_cam[cam_idx]
             imu_idx_cur = np.searchsorted(t_imu, t_cam[cam_idx], side='left')
             imu_idx_next = np.searchsorted(t_imu, t_cam[cam_idx+1], side='left')
+            print(cam_idx, cam_idx+1, imu_idx_cur, imu_idx_next)
 
             Xi = self.pose_keys[cam_idx]
             Vi = self.vel_keys[cam_idx]
@@ -96,6 +96,8 @@ class ScaleOptimizer:
             pim_k = gtsam.PreintegratedImuMeasurements(self.preint_params, bias_i)
 
             for i in range(imu_idx_cur, imu_idx_next):
+                if i+1 >= N_imu:
+                    break
                 dt_imu = t_imu[i+1] - t_imu[i]
                 pim_k.integrateMeasurement(a[i], w[i], dt_imu)
 
@@ -118,17 +120,17 @@ class ScaleOptimizer:
             )
 
         # add the prior for the initial position
-        self.factor_graph.add(gtsam.PriorFactorPose3(
-            self.pose_keys[0],
-            gtsam.Pose3(
-                gtsam.Rot3.Quaternion(x_init[6], x_init[3], x_init[4], x_init[5]),
-                gtsam.Point3(x_init[0], x_init[1], x_init[2])
-            ),
-            gtsam.noiseModel.Diagonal.Sigmas(np.array([
-                10.0, 10.0, 10.0,    # Loose on rotation (allow gravity alignment)
-                0.01, 0.01, 0.01  # VERY loose on position (let scale determine)
-            ]))
-        ))
+        #self.factor_graph.add(gtsam.PriorFactorPose3(
+        #    self.pose_keys[0],
+        #    gtsam.Pose3(
+        #        gtsam.Rot3.Quaternion(x_init[6], x_init[3], x_init[4], x_init[5]),
+        #        gtsam.Point3(x_init[0], x_init[1], x_init[2])
+        #    ),
+        #    gtsam.noiseModel.Diagonal.Sigmas(np.array([
+        #        10.0, 10.0, 10.0,    # Loose on rotation (allow gravity alignment)
+        #        0.01, 0.01, 0.01  # VERY loose on position (let scale determine)
+        #    ]))
+        #))
 
         # Add loose prior on scale to help convergence
         #scale_prior = gtsam.noiseModel.Isotropic.Sigma(1, 0.5)  # loose
@@ -156,43 +158,48 @@ class ScaleOptimizer:
         """
         params = gtsam.LevenbergMarquardtParams()
         params.setVerbosity("ERROR")  # or try "TERMINATION", "VALUES"
-        params.setMaxIterations(200)      # increase max iterations to 1000
+        params.setMaxIterations(1000)      # increase max iterations to 1000
         optimizer = gtsam.LevenbergMarquardtOptimizer(self.factor_graph, self.values, params)
         result = optimizer.optimize()
         return result
     
-def vision_factor(meas_i, meas_j, this, values, H=None):
+def vision_factor(meas_i, meas_j, T_ic, this, values, H=None):
+    # TODO:
+    # I need the relative pose between adjacent frames, then I can compute the measurement matrix (which is
+    # also the relative pose between frames), and get error to those relative poses.
+
     key_x_i, key_x_j, key_s = this.keys()
 
     pose_i: gtsam.Pose3 = values.atPose3(key_x_i)
     pose_j: gtsam.Pose3 = values.atPose3(key_x_j)
     s = values.atVector(key_s)[0]
 
+    # static cam-imu transform (assumed known and fixed)
+    R_ic = T_ic[0:3, 0:3]
+    t_ic = T_ic[0:3, 3]
+
+    R_ci = R_ic.T
+    t_ci = -R_ic.T @ t_ic
+
+    # extract relative measured camera pose
+    R_i_meas = spR.from_quat(meas_i[3:7]).as_matrix()
+    R_j_meas = spR.from_quat(meas_j[3:7]).as_matrix()
+    R_ij = R_i_meas.T @ R_j_meas
+    R_rel = gtsam.Rot3(R_ic) * gtsam.Rot3(R_ij) * gtsam.Rot3(R_ci)
+
+    t_c1 = R_ic @ R_ij @ t_ci + t_ic # component with the scale factor involved
+    t_c2 = R_ic @ R_i_meas.T @ (meas_j[0:3] - meas_i[0:3]) # component which is not dependent on scale factor
+    
     # estimated relative motion in metric frame
-    t_i = np.array(pose_i.translation())
-    t_j = np.array(pose_j.translation())
-    dt_est = t_j - t_i
-
-    R_i = pose_i.rotation()
-    R_j = pose_j.rotation()
-    R_ij_est = R_i.between(R_j)
-
-    # measured relative motion in unscaled camera frame
-    t_i_meas = meas_i[0:3]
-    t_j_meas = meas_j[0:3]
-    dt_meas = t_j_meas - t_i_meas
-
-    q_i_meas = meas_i[3:7]
-    q_j_meas = meas_j[3:7]
-    R_i_meas = gtsam.Rot3.Quaternion(q_i_meas[3], q_i_meas[0], q_i_meas[1], q_i_meas[2])
-    R_j_meas = gtsam.Rot3.Quaternion(q_j_meas[3], q_j_meas[0], q_j_meas[1], q_j_meas[2])
-    R_ij_meas = R_i_meas.between(R_j_meas)
+    pose_rel_est = pose_i.between(pose_j)
+    dt_est = pose_rel_est.translation()
+    R_ij_est = pose_rel_est.rotation()  # this is the estimated relative rotation between frames i and j
 
     # translation: scaled measured delta should match estimated delta
-    r_t = dt_est - s * dt_meas
+    r_t = dt_est - (s * t_c2 + t_c1)
 
     # rotation: measured relative rotation should match estimated relative rotation
-    R_err = R_ij_meas.between(R_ij_est)
+    R_err = R_rel.between(R_ij_est)
     r_R = np.array(gtsam.Rot3.Logmap(R_err))
 
     error = np.hstack([r_t, r_R])
@@ -208,7 +215,7 @@ def vision_factor(meas_i, meas_j, this, values, H=None):
         # translation residual jacobians
         H_xi[0:3, 3:6] = -np.eye(3)      # d(dt_est)/d(t_i)
         H_xj[0:3, 3:6] = np.eye(3)       # d(dt_est)/d(t_j)
-        H_s[0:3, 0] = -dt_meas           # d(-s*dt_meas)/ds
+        H_s[0:3, 0] = -t_c2              # d(-s*t_c2)/ds
 
         # rotation residual jacobians (first-order)
         H_xi[3:6, 0:3] = -Jr_inv
